@@ -14,6 +14,14 @@ extern int thread_size;
 extern int thread_info_in_task;
 extern int sp_el0_is_current;
 extern int sp_el0_is_thread_info;
+/*
+ * Set when the kernel keeps 'current' in TPIDRRO_EL0 instead of SP_EL0
+ * (seen on the android17-6.18 GKI kernel: kernel entry writes the task to
+ * TPIDRRO_EL0 and points SP_EL0 at the per-CPU overflow stack, and every
+ * get_current() is "mrs xN, tpidrro_el0"). Mutually exclusive with
+ * sp_el0_is_current. thread_info is still the first member of task_struct.
+ */
+extern int tpidrro_el0_is_current;
 extern int task_in_thread_info_offset;
 extern int stack_in_task_offset;
 extern int stack_end_offset;
@@ -37,8 +45,16 @@ static inline struct thread_info *current_thread_info_sp_el0()
     return (struct thread_info *)current_sp_el0;
 }
 
+static inline uint64_t current_tpidrro_el0()
+{
+    uint64_t tpidrro_el0;
+    asm volatile("mrs %0, tpidrro_el0" : "=r"(tpidrro_el0));
+    return tpidrro_el0;
+}
+
 static inline struct thread_info *current_thread_info()
 {
+    if (tpidrro_el0_is_current) return (struct thread_info *)current_tpidrro_el0();
     if (thread_info_in_task || sp_el0_is_thread_info) return (struct thread_info *)current_sp_el0();
     return current_thread_info_sp();
 }
@@ -50,6 +66,7 @@ static inline struct task_struct *get_current()
         asm volatile("mrs %0, sp_el0" : "=r"(sp_el0));
         return (struct task_struct *)sp_el0;
     }
+    if (tpidrro_el0_is_current) return (struct task_struct *)current_tpidrro_el0();
     uint64_t addr = (uint64_t)current_thread_info() + task_in_thread_info_offset;
     return *(struct task_struct **)addr;
 }
@@ -107,6 +124,11 @@ static inline const struct task_struct *override_current(struct task_struct *tas
         asm volatile("msr sp_el0, %0" ::"r"(task));
         return (struct task_struct *)sp_el0;
     }
+    if (tpidrro_el0_is_current) {
+        uint64_t old = current_tpidrro_el0();
+        asm volatile("msr tpidrro_el0, %0" ::"r"(task));
+        return (struct task_struct *)old;
+    }
     uint64_t addr = (uint64_t)current_thread_info() + task_in_thread_info_offset;
     struct task_struct *old = *(struct task_struct **)addr;
     *(struct task_struct **)addr = (struct task_struct *)task;
@@ -117,6 +139,10 @@ static inline void revert_current(const struct task_struct *old)
 {
     if (sp_el0_is_current) {
         asm volatile("msr sp_el0, %0" ::"r"(old));
+        return;
+    }
+    if (tpidrro_el0_is_current) {
+        asm volatile("msr tpidrro_el0, %0" ::"r"(old));
         return;
     }
     uint64_t addr = (uint64_t)current_thread_info() + task_in_thread_info_offset;

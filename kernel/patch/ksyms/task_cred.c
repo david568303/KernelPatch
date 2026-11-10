@@ -130,6 +130,9 @@ KP_EXPORT_SYMBOL(sp_el0_is_current);
 int sp_el0_is_thread_info = 0;
 KP_EXPORT_SYMBOL(sp_el0_is_thread_info);
 
+int tpidrro_el0_is_current = 0;
+KP_EXPORT_SYMBOL(tpidrro_el0_is_current);
+
 int task_in_thread_info_offset = -1;
 KP_EXPORT_SYMBOL(task_in_thread_info_offset);
 
@@ -524,16 +527,19 @@ int resolve_task_offset()
 int resolve_current()
 {
     log_boot("current: \n");
-    uint64_t sp_el0, sp;
+    uint64_t sp_el0, sp, tpidrro_el0;
     asm volatile("mrs %0, sp_el0" : "=r"(sp_el0));
     asm volatile("mov %0, sp" : "=r"(sp));
+    asm volatile("mrs %0, tpidrro_el0" : "=r"(tpidrro_el0));
 
     log_boot("    sp_el0: %llx\n", sp_el0);
     log_boot("    sp: %llx\n", sp);
+    log_boot("    tpidrro_el0: %llx\n", tpidrro_el0);
 
     // default value
     sp_el0_is_current = 0;
     sp_el0_is_thread_info = 0;
+    tpidrro_el0_is_current = 0;
 
     init_task = (struct task_struct *)kallsyms_lookup_name("init_task");
     uint64_t init_thread_union_addr = kallsyms_lookup_name("init_thread_union");
@@ -546,7 +552,18 @@ int resolve_current()
     log_boot("    init_task addr lookup: %llx\n", init_task);
     log_boot("    init_thread_union addr lookup: %llx\n", init_thread_union_addr);
 
-    if (is_kimg_range(sp_el0)) {
+    /* Newer arm64 kernels (android17-6.18) keep 'current' in TPIDRRO_EL0 and
+     * point SP_EL0 at the per-CPU overflow stack. This runs in the boot task,
+     * so TPIDRRO_EL0 then holds exactly &init_task. Only an exact match with
+     * the kallsyms address is accepted: on older kernels TPIDRRO_EL0 is zero,
+     * a compat TLS value or a KPTI scratch value in kernel mode, never the
+     * address of init_task. SP_EL0 must not be interpreted in that case: its
+     * low bits are non-zero and the heuristics below would take the overflow
+     * stack for a task_struct. */
+    if (init_task && tpidrro_el0 == (uint64_t)init_task) {
+        tpidrro_el0_is_current = 1;
+        log_boot("    tpidrro_el0: current\n");
+    } else if (is_kimg_range(sp_el0)) {
         if (sp_el0 == init_thread_union_addr) {
             sp_el0_is_thread_info = 1;
             log_boot("    sp_el0: current_thread_info\n");
@@ -608,7 +625,7 @@ int resolve_current()
      * Only take this path when sp_el0 identified current as task_struct.  If
      * sp_el0 is thread_info, an absent magic also means we cannot safely infer
      * the end_of_stack offset used by old !THREAD_INFO_IN_TASK kernels. */
-    if (!thread_size && init_thread_union_addr && sp_el0_is_current) {
+    if (!thread_size && init_thread_union_addr && (sp_el0_is_current || tpidrro_el0_is_current)) {
         for (int i = 0; i < sizeof(thread_shift_cand) / sizeof(thread_shift_cand[0]); i++) {
             int tsz = 1 << thread_shift_cand[i];
             uint64_t sp_low = sp & ~(tsz - 1);

@@ -773,6 +773,14 @@ static int arm64_verify_pid_vnr_window(kallsym_t *info, char *img, int32_t imgle
                 info->current_type = SP_EL0;
                 return 0;
             }
+            // android17-6.18 keeps 'current' in TPIDRRO_EL0 (SP_EL0 points at
+            // the per-CPU overflow stack there), so pid_vnr starts with
+            // "mrs xN, tpidrro_el0" instead
+            if (aarch64_insn_extract_system_reg(insn) == AARCH64_INSN_SPCLREG_TPIDRRO_EL0) {
+                tools_logi("pid_vnr verfied tpidrro_el0, insn: 0x%x (off %+d)\n", insn, i);
+                info->current_type = TPIDRRO_EL0;
+                return 0;
+            }
         }
         if (generic_sp && i >= 0) {
             if (enc == AARCH64_INSN_CLS_DP_IMM) {

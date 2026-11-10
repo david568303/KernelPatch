@@ -60,7 +60,8 @@ enum arch_type
 enum current_type
 {
     SP_EL0,
-    SP
+    SP,
+    TPIDRRO_EL0
 };
 
 #define ELF64_KERNEL_MIN_VA 0xffffff8008080000
