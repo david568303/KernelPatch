@@ -201,7 +201,19 @@ static int avc_denied_replace(struct selinux_state *_state, void *_ssid, void *_
 allow:
     struct av_decision *avd = (struct av_decision *)_avd;
     if ((uint64_t)_state <= 0xffffffffL) {
-        avd = (struct av_decision *)_flags;
+        /* No selinux_state argument. Up to 6.12 that leaves eight arguments,
+         * with avd in the eighth. 6.13 added base_perm, so there are nine
+         * again: the eighth is 'flags' and avd is the ninth, on the stack.
+         * 'flags' is a small bit mask (AVC_STRICT | AVC_EXTENDED_PERMS |
+         * AVC_NONBLOCKING), never a kernel address, which tells them apart.
+         * Taking 'flags' for avd was a NULL write in the first privileged
+         * exec on android17-6.18. */
+        if ((uint64_t)_flags > 0xffffffffL) avd = (struct av_decision *)_flags;
+    }
+    /* Never write through something that is not a kernel address: on an
+     * unknown layout fall back to the kernel's own decision. */
+    if ((uint64_t)avd <= 0xffffffffL) {
+        return avc_denied_backup(_state, _ssid, _tsid, _tclass, _requested, _driver, _xperm, _flags, _avd);
     }
     avd->allowed = 0xffffffff;
     avd->auditallow = 0;
