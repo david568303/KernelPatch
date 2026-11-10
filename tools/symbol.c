@@ -192,6 +192,17 @@ void select_map_area(kallsym_t *kallsym, char *image_buf, int imglen, int32_t *m
 #define AUT 0xd50323bf
 #define PAC_MASK 0xFFFFFD1F
 #define PAC_PATTERN 0xD503211F
+/* PACIASP, PACIBSP, PACIAZ and PACIBZ are also the function's BTI landing pad.
+ * With CONFIG_ARM64_BTI_KERNEL a NOP in their place faults ("Oops - BTI") as
+ * soon as the function is called through a pointer: on android17-6.18 the map
+ * area holds net_rx_action, which the softirq vector calls, so the first
+ * packet panicked the kernel. Replace those with BTI c, which keeps a landing
+ * pad for BLR and for BR x16/x17 and is a NOP where BTI is absent; every other
+ * PAC/AUT hint in the area still becomes NOP. */
+#define BTI_C 0xD503245F
+#define PAC_LANDING_MASK 0xFFFFFF9F
+#define PAC_LANDING_PATTERN 0xD503231F
+#define PAC_NEUTRAL(insn) ((((insn) & PAC_LANDING_MASK) == PAC_LANDING_PATTERN) ? BTI_C : NOP)
 
     uint32_t pos = 0;
     uint32_t count = 0;
@@ -205,7 +216,7 @@ void select_map_area(kallsym_t *kallsym, char *image_buf, int imglen, int32_t *m
         if ((insn & 0xFFFFFD1F) == 0xD503211F) {
             pos = i;
             count++;
-            *(uint32_t *)(image_buf + addr + pos) = NOP;
+            *(uint32_t *)(image_buf + addr + pos) = PAC_NEUTRAL(insn);
         }
     }
 
@@ -217,15 +228,17 @@ void select_map_area(kallsym_t *kallsym, char *image_buf, int imglen, int32_t *m
         tools_logi("pac verify not pair  pos: %x  count: %d\n", pos, count);
 
         uint32_t second_pos = 0;
+        uint32_t second_insn = 0;
         for (uint32_t j = *max_size; j < *max_size * 2; j += asmbit) {
             uint32_t insn = *(uint32_t *)(image_buf + addr + j);
             if ((insn & 0xFFFFFD1F) == 0xD503211F) {
                 second_pos = j;
+                second_insn = insn;
                 break;
             }
         }
         tools_logi("second_pos: %x \n", second_pos);
-        *(uint32_t *)(image_buf + addr + second_pos) = NOP;
+        *(uint32_t *)(image_buf + addr + second_pos) = PAC_NEUTRAL(second_insn);
     }
 
 #undef NOP
@@ -233,6 +246,10 @@ void select_map_area(kallsym_t *kallsym, char *image_buf, int imglen, int32_t *m
 #undef AUT
 #undef PAC_MASK
 #undef PAC_PATTERN
+#undef BTI_C
+#undef PAC_LANDING_MASK
+#undef PAC_LANDING_PATTERN
+#undef PAC_NEUTRAL
 }
 
 int fillin_map_symbol(kallsym_t *kallsym, char *img_buf, map_symbol_t *symbol, int32_t target_is_be)
